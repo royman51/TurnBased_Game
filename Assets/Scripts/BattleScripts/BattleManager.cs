@@ -474,8 +474,13 @@ public partial class BattleManager : MonoBehaviour
             yield return PlayTurnStartIntro(isFirstTurn);
             isFirstTurn = false;
 
+            yield return ShowTurnBordersForPlanning();
+
             yield return PlayerPlanningPhase();
             yield return RestoreCameraAfterSelection();
+
+            yield return HideTurnBordersUntilNextTurn();
+
             yield return ExecuteSelectedCommands();
             yield return RestoreCameraAfterSelection();
 
@@ -967,5 +972,276 @@ public partial class BattleManager : MonoBehaviour
         canvasGroup.interactable = canUse;
         canvasGroup.blocksRaycasts = canUse;
     }
+
+
+    private class TurnBorderInstance
+    {
+        public RectTransform Rect;
+        public RectTransform Template;
+        public bool HasCreatedNext;
+    }
+
+    [Header("턴 보더 연출")]
+    [SerializeField] private RectTransform turnBorderL;
+    [SerializeField] private RectTransform turnBorderR;
+
+    [SerializeField] private float turnBorderFadeInTime = 0.45f;
+    [SerializeField] private float turnBorderFadeOutTime = 0.35f;
+    [SerializeField] private float turnBorderPlanningAlpha = 0.45f;
+
+    [SerializeField] private float turnBorderMoveSpeed = 260f;
+    [SerializeField] private float turnBorderCloneTriggerY = -355f;
+    [SerializeField] private float turnBorderCloneStartY = 1277f;
+    [SerializeField] private float turnBorderDestroyY = -1288f;
+
+    private readonly List<TurnBorderInstance> activeTurnBorders = new List<TurnBorderInstance>();
+
+    private Coroutine turnBorderMoveCoroutine;
+    private float currentTurnBorderAlpha;
+    private bool isTurnBorderActive;
+
+    private IEnumerator ShowTurnBordersForPlanning()
+    {
+        SetupTurnBorderReferences();
+
+        if (turnBorderL == null || turnBorderR == null)
+        {
+            Debug.LogWarning("Border_L 또는 Border_R을 찾지 못했습니다.");
+            yield break;
+        }
+
+        ClearTurnBorderRuntimeObjects();
+
+        isTurnBorderActive = true;
+        currentTurnBorderAlpha = 0f;
+
+        SetTurnBorderGraphicAlpha(turnBorderL.gameObject, 0f);
+        SetTurnBorderGraphicAlpha(turnBorderR.gameObject, 0f);
+
+        CreateTurnBorderInstance(turnBorderL, turnBorderL.anchoredPosition);
+        CreateTurnBorderInstance(turnBorderR, turnBorderR.anchoredPosition);
+
+        if (turnBorderMoveCoroutine != null)
+        {
+            StopCoroutine(turnBorderMoveCoroutine);
+        }
+
+        turnBorderMoveCoroutine = StartCoroutine(TurnBorderMoveLoop());
+
+        yield return FadeTurnBorders(0f, turnBorderPlanningAlpha, turnBorderFadeInTime);
+    }
+
+    private IEnumerator HideTurnBordersUntilNextTurn()
+    {
+        if (!isTurnBorderActive)
+        {
+            yield break;
+        }
+
+        yield return FadeTurnBorders(currentTurnBorderAlpha, 0f, turnBorderFadeOutTime);
+
+        isTurnBorderActive = false;
+
+        if (turnBorderMoveCoroutine != null)
+        {
+            StopCoroutine(turnBorderMoveCoroutine);
+            turnBorderMoveCoroutine = null;
+        }
+
+        ClearTurnBorderRuntimeObjects();
+
+        if (turnBorderL != null)
+        {
+            SetTurnBorderGraphicAlpha(turnBorderL.gameObject, 0f);
+        }
+
+        if (turnBorderR != null)
+        {
+            SetTurnBorderGraphicAlpha(turnBorderR.gameObject, 0f);
+        }
+    }
+
+    private void SetupTurnBorderReferences()
+    {
+        if (turnBorderL == null)
+        {
+            GameObject foundL = FindSceneObjectByNameForTurnBorder("Border_L");
+
+            if (foundL != null)
+            {
+                turnBorderL = foundL.GetComponent<RectTransform>();
+            }
+        }
+
+        if (turnBorderR == null)
+        {
+            GameObject foundR = FindSceneObjectByNameForTurnBorder("Border_R");
+
+            if (foundR != null)
+            {
+                turnBorderR = foundR.GetComponent<RectTransform>();
+            }
+        }
+    }
+
+    private IEnumerator TurnBorderMoveLoop()
+    {
+        while (isTurnBorderActive)
+        {
+            for (int i = activeTurnBorders.Count - 1; i >= 0; i--)
+            {
+                TurnBorderInstance instance = activeTurnBorders[i];
+
+                if (instance == null || instance.Rect == null)
+                {
+                    activeTurnBorders.RemoveAt(i);
+                    continue;
+                }
+
+                Vector2 position = instance.Rect.anchoredPosition;
+                position.y -= turnBorderMoveSpeed * Time.deltaTime;
+                instance.Rect.anchoredPosition = position;
+
+                if (!instance.HasCreatedNext && position.y <= turnBorderCloneTriggerY)
+                {
+                    instance.HasCreatedNext = true;
+
+                    Vector2 clonePosition = position;
+                    clonePosition.y = turnBorderCloneStartY;
+
+                    CreateTurnBorderInstance(instance.Template, clonePosition);
+                }
+
+                if (position.y <= turnBorderDestroyY)
+                {
+                    Destroy(instance.Rect.gameObject);
+                    activeTurnBorders.RemoveAt(i);
+                }
+            }
+
+            yield return null;
+        }
+    }
+
+    private void CreateTurnBorderInstance(RectTransform template, Vector2 anchoredPosition)
+    {
+        if (template == null)
+        {
+            return;
+        }
+
+        GameObject clone = Instantiate(template.gameObject, template.parent);
+        clone.name = template.name + "_Runtime";
+
+        RectTransform cloneRect = clone.GetComponent<RectTransform>();
+        cloneRect.anchoredPosition = anchoredPosition;
+
+        clone.SetActive(true);
+        SetTurnBorderGraphicAlpha(clone, currentTurnBorderAlpha);
+
+        TurnBorderInstance instance = new TurnBorderInstance
+        {
+            Rect = cloneRect,
+            Template = template,
+            HasCreatedNext = false
+        };
+
+        activeTurnBorders.Add(instance);
+    }
+
+    private IEnumerator FadeTurnBorders(float startAlpha, float targetAlpha, float duration)
+    {
+        float timer = 0f;
+        float safeDuration = Mathf.Max(0.01f, duration);
+
+        while (timer < safeDuration)
+        {
+            timer += Time.deltaTime;
+
+            float t = Mathf.Clamp01(timer / safeDuration);
+            t = Mathf.SmoothStep(0f, 1f, t);
+
+            currentTurnBorderAlpha = Mathf.Lerp(startAlpha, targetAlpha, t);
+            ApplyAlphaToActiveTurnBorders(currentTurnBorderAlpha);
+
+            yield return null;
+        }
+
+        currentTurnBorderAlpha = targetAlpha;
+        ApplyAlphaToActiveTurnBorders(currentTurnBorderAlpha);
+    }
+
+    private void ApplyAlphaToActiveTurnBorders(float alpha)
+    {
+        for (int i = 0; i < activeTurnBorders.Count; i++)
+        {
+            if (activeTurnBorders[i] == null || activeTurnBorders[i].Rect == null)
+            {
+                continue;
+            }
+
+            SetTurnBorderGraphicAlpha(activeTurnBorders[i].Rect.gameObject, alpha);
+        }
+    }
+
+    private void SetTurnBorderGraphicAlpha(GameObject target, float alpha)
+    {
+        if (target == null)
+        {
+            return;
+        }
+
+        Graphic[] graphics = target.GetComponentsInChildren<Graphic>(true);
+
+        for (int i = 0; i < graphics.Length; i++)
+        {
+            Color color = graphics[i].color;
+            color.a = alpha;
+            graphics[i].color = color;
+        }
+    }
+
+    private void ClearTurnBorderRuntimeObjects()
+    {
+        for (int i = activeTurnBorders.Count - 1; i >= 0; i--)
+        {
+            if (activeTurnBorders[i] != null && activeTurnBorders[i].Rect != null)
+            {
+                Destroy(activeTurnBorders[i].Rect.gameObject);
+            }
+        }
+
+        activeTurnBorders.Clear();
+    }
+
+    private GameObject FindSceneObjectByNameForTurnBorder(string objectName)
+    {
+        Transform[] allTransforms = Resources.FindObjectsOfTypeAll<Transform>();
+
+        for (int i = 0; i < allTransforms.Length; i++)
+        {
+            Transform target = allTransforms[i];
+
+            if (target == null)
+            {
+                continue;
+            }
+
+            if (target.name != objectName)
+            {
+                continue;
+            }
+
+            if (!target.gameObject.scene.IsValid())
+            {
+                continue;
+            }
+
+            return target.gameObject;
+        }
+
+        return null;
+    }
+
 
 }

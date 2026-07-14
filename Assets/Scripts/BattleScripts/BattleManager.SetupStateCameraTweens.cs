@@ -1,4 +1,3 @@
-// SPLIT BUILD: DAMAGE_DISPLAY_TEMPLATE_ORIGIN_FIXED_V11_SPLIT
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
